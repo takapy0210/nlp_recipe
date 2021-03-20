@@ -1,3 +1,8 @@
+"""日本語のトークナイズ処理
+
+"""
+
+
 import MeCab
 import spacy
 import ginza
@@ -5,8 +10,10 @@ from pyknp import Juman
 from sudachipy import tokenizer
 from sudachipy import dictionary
 from janome.tokenizer import Tokenizer
+import pandas as pd
+from tqdm import tqdm as tqdm
 
-from . import preprocessing
+import preprocessing
 
 PROPER_NOUN = '固有名詞'
 
@@ -20,7 +27,7 @@ def preprocess(text: str) -> str:
     Returns:
         str: 前処理後のテキスト
     """
-    text = preprocessing.clean_specific_character(text)
+    # text = preprocessing.clean_specific_character(text)
     text = preprocessing.clean_html(text)
     text = preprocessing.clean_kaomoji(text)
     text = preprocessing.clean_emoji(text)
@@ -90,23 +97,18 @@ class MeCabTokenizer(object):
         chunks = self.parser(text.rstrip()).splitlines()[:-1]
         res = []
         for chunk in chunks:
-            try:
-                chunk.split('\t')[1].split(',')[0]
-                surface, feature = chunk.split('\t')
-                feature = feature.split(',')
-                p = feature[0]
-                base = feature[6]
-                if base == '*':
-                    base = surface  # 原型が存在しないものは、元の単語を返却する
-                if p in self.include_pos and base not in self.stopwords:
-                    if pos:
-                        res.append((base, p))
-                    else:
-                        res.append(base)
-            except:
-                print(text)
-                print(chunk.split('\t'))
-                # print(chunk)
+            chunk.split('\t')[1].split(',')[0]
+            surface, feature = chunk.split('\t')
+            feature = feature.split(',')
+            p = feature[0]
+            base = feature[6]
+            if base == '*':
+                base = surface  # 原型が存在しないものは、元の単語を返却する
+            if p in self.include_pos and base not in self.stopwords:
+                if pos:
+                    res.append((base, p))
+                else:
+                    res.append(base)
 
         return res
 
@@ -170,6 +172,46 @@ class GinzaTokenizer():
         else:
             self.include_pos = include_pos
 
+        self.dep_tag_dict = {
+            'acl': '名詞の節修飾語',
+            'advcl': '副詞節修飾語',
+            'advmod': '副詞修飾語',
+            'amod': '形容詞修飾語',
+            'appos': '同格',
+            'aux': '助動詞',
+            'case': '格表示',
+            'cc': '等位接続詞',
+            'ccomp': '補文',
+            'clf': '類別詞',
+            'compound': '複合名詞',
+            'conj': '結合詞',
+            'cop': '連結詞',
+            'csubj': '主部',
+            'dep': '不明な依存関係',
+            'det': '限定詞',
+            'discourse': '談話要素',
+            'dislocated': '転置',
+            'expl': '嘘辞',
+            'fixed': '固定複数単語表現',
+            'flat': '同格複数単語表現',
+            'goeswith': '1単語分割表現',
+            'iobj': '関節目的語',
+            'list': 'リスト表現',
+            'mark': '接続詞',
+            'nmod': '名詞修飾語',
+            'nsubj': '主語名詞',
+            'nummod': '数詞修飾語',
+            'obj': '目的語',
+            'obl': '斜格名詞',
+            'orphan': '独立関係',
+            'parataxis': '並列',
+            'punct': '句読点',
+            'reparandum': '単語として認識されない表現',
+            'ROOT': '文の根',
+            'vocative': '発声関係',
+            'xcomp': '補体',
+        }
+
     def tokenize(self, text, pos=False):
         """指定した品詞でトークナイズを行う
 
@@ -181,7 +223,7 @@ class GinzaTokenizer():
             list: トークナイズを行った単語リスト
         """
         # 前処理
-        text = preprocess(text)
+        # text = preprocess(text)
 
         # 形態素解析
         doc = self.ginza(text)
@@ -223,6 +265,54 @@ class GinzaTokenizer():
                         res.append(base)
 
         return res
+
+    def get_morphological_df(self, input_df, id_col, text_col, filter_dep_tag=None) -> pd.DataFrame:
+        """形態素解析DFを生成する
+
+        Args:
+            input_df (pd.DataFrame): 形態素解析DFを生成する元のDF
+            id_col (str): 文章IDカラム
+            text_col (str): テキストデータが保存されているカラム
+            filter_dep_tag (list of str): 対象とする係り受けタグ: https://qiita.com/kei_0324/items/400f639b2f185b39a0cf
+
+        Returns:
+            pd.DataFrame: DataFrame
+                [id, sentence_id, word_id, serface, lemma, pos, posd, entity_type, dep_tag, dep_tag_jp, dep_word_id, dep_lemma, dep_relation]
+        """
+
+        res = []
+        for i in tqdm(range(input_df.shape[0])):
+            _id = input_df.iloc[i][id_col]
+            _text = input_df.iloc[i][text_col]
+            # 前処理
+            text = preprocess(_text)
+
+            # 形態素解析
+            doc = self.ginza(text)
+            for sent_id, sent in enumerate(doc.sents):
+                for token in sent:
+                    p = token.tag_.split("-")[0]  # 品詞
+                    base = token.lemma_  # 原型
+                    if p in self.include_pos and base not in self.stopwords:
+                        info_dict = {}
+                        info_dict["id"] = _id
+                        info_dict["sentence_id"] = sent_id
+                        info_dict["word_id"] = token.i  # トークン番号（複数文がある場合でも0に戻らず連番になる）
+                        info_dict["serface"] = token.orth_  # オリジナルテキスト
+                        info_dict["lemma"] = token.lemma_  # 基本形（名寄せ後）
+                        info_dict["pos"] = token.tag_.split("-")[0]  # 品詞
+                        info_dict["posd"] = token.tag_.split("-")[1] if len(token.tag_.split("-")) > 1 else ''  # 品詞詳細
+                        info_dict['entity_type'] = token.ent_type_  # 固有表現タグ
+                        dep_tag = token.dep_  # 係り受けの関係性
+                        info_dict["dep_tag"] = dep_tag
+                        info_dict["dep_tag_jp"] = self.dep_tag_dict.get(dep_tag, '不明なタグ')
+                        info_dict["dep_word_id"] = token.head.i  # 係り受けの相手トークン番号
+                        info_dict["dep_lemma"] = token.head.lemma_  # 係り受けの相手のテキスト
+                        info_dict["dep_relation"] = token.lemma_ + ' -> ' + token.head.lemma_
+                        if (filter_dep_tag is not None) and (dep_tag not in filter_dep_tag):
+                            info_dict["dep_relation"] = ''
+                        res.append(info_dict)
+        return pd.DataFrame(res)
 
 
 class JumanppTokenizer():
@@ -373,7 +463,7 @@ class SudachiTokenizer():
             \t| 品詞細分類: {m.part_of_speech()[1]}\t| 活用型: {m.part_of_speech()[4]}\t| 活用形: {m.part_of_speech()[5]}')
 
     ref:
-
+        https://github.com/WorksApplications/Sudachi
     """
     def __init__(self, mode="C", stopwords=None, include_pos=None):
 
