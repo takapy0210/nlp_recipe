@@ -1,4 +1,4 @@
-# 日本語における前処理・トークナイズ
+# 日本語における前処理・トークナイズスクリプトをまとめています
 
 ## usage
 
@@ -33,4 +33,10 @@ token = mecab_tokenizer.tokenize(text)
 
 # only proper noun
 token = mecab_tokenizer.tokenize_proper_noun(text)
+```
+
+pd.DataFrameに適応する場合は下記のように記述します
+
+```python
+df.loc[:, 'tokenize'] = df['content'].apply(token.tokenize)
 ```
